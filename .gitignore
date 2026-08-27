@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables / secrets
+.env
+
+# Generated RAG index
+storage/
+indexes/
+
+# Test / cache files
+.pytest_cache/
+.mypy_cache/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
