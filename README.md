@@ -6,6 +6,9 @@ The agent can answer customer questions from a controlled knowledge base, look u
 
 The project includes a Streamlit web interface for an interactive demonstration.
 
+<img width="1439" height="752" alt="image" src="https://github.com/user-attachments/assets/c3fc4a55-68d3-4f27-8789-1155da8c9fe9" />
+
+
 ---
 
 ## Key Features
