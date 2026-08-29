@@ -3,3 +3,4 @@ python-dotenv
 numpy
 PyYAML
 pytest
+ollama
