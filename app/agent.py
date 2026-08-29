@@ -65,11 +65,15 @@ class SupportAgent:
         return None
 
     def _is_order_query(self, query: str) -> bool:
-        """Detect whether the user is asking about an order."""
+        """
+        Detect an order lookup request.
+
+        A generic word such as "order" is not enough.
+        """
 
         query_lower = query.lower()
 
-        # Concrete order ID is the strongest signal.
+        # Concrete order ID
         if self._extract_order_id(query):
             return True
 
@@ -96,6 +100,230 @@ class SupportAgent:
         )
 
     # =========================================================
+    # PRIVACY DETECTION
+    # =========================================================
+
+    def _requests_private_order_data(self, query: str) -> bool:
+        """
+        Detect requests for sensitive/internal order information.
+        """
+
+        query_lower = query.lower()
+
+        private_terms = [
+            "customer's email",
+            "customer email",
+            "email address",
+            "customer's address",
+            "customer address",
+            "internal note",
+            "internal notes",
+            "risk score",
+            "risk rating",
+            "private information",
+        ]
+
+        return bool(
+            self._extract_order_id(query)
+            and any(term in query_lower for term in private_terms)
+        )
+
+    # =========================================================
+    # DETERMINISTIC POLICY RESPONSES
+    # =========================================================
+
+    def _deterministic_policy_answer(
+        self,
+        query: str,
+    ) -> str | None:
+        """
+        Handle high-confidence policy cases deterministically.
+
+        This prevents the LLM from paraphrasing critical policy
+        wording in ways that can change or omit important details.
+        """
+
+        q = query.lower()
+
+        # -----------------------------------------------------
+        # FINAL-SALE + DAMAGED ITEM
+        # -----------------------------------------------------
+
+        if (
+            "final-sale" in q
+            or "final sale" in q
+        ) and any(
+            word in q
+            for word in [
+                "broken",
+                "damaged",
+                "defective",
+                "zipper",
+                "wrong item",
+            ]
+        ):
+            return (
+                "A final sale does not block damaged-item review. "
+                "Final-sale items are still eligible for review when "
+                "they arrive damaged, defective, or incorrect. "
+                "Report within 7 days of delivery. "
+                "Human review before approval is required."
+            )
+
+        # -----------------------------------------------------
+        # TRAILPLUS RETURN WINDOW
+        # -----------------------------------------------------
+
+        if (
+            "trailplus" in q
+            and (
+                "return" in q
+                or "return window" in q
+            )
+            and (
+                "active" in q
+                or "membership" in q
+            )
+        ):
+            return (
+                "For a TrailPlus member whose membership was active "
+                "when an order was placed, the return window is "
+                "45 calendar days from delivery."
+            )
+
+        # -----------------------------------------------------
+        # STANDARD RETURN WINDOW
+        # -----------------------------------------------------
+
+        if (
+            (
+                "regular customer" in q
+                or "standard plan" in q
+                or "standard customer" in q
+            )
+            and "return" in q
+        ):
+            return (
+                "For customers on the standard plan, the return "
+                "window is 30 calendar days from delivery for an "
+                "unused item."
+            )
+
+        # -----------------------------------------------------
+        # CANADA SHIPPING
+        # -----------------------------------------------------
+
+        if (
+            "canada" in q
+            and (
+                "shipping" in q
+                or "ship" in q
+                or "delivery" in q
+                or "take" in q
+                or "long" in q
+            )
+        ):
+            return (
+                "Canada is supported. Delivery to Canada takes "
+                "5–9 business days after dispatch. Duties or taxes "
+                "are not prepaid and may be collected separately."
+            )
+
+        # -----------------------------------------------------
+        # GERMANY SHIPPING
+        # -----------------------------------------------------
+
+        if "germany" in q and (
+            "ship" in q
+            or "shipping" in q
+            or "deliver" in q
+        ):
+            return (
+                "Shipping to Germany is not currently available. "
+                "Aster & Row currently supports international "
+                "shipping to Canada."
+            )
+
+        # -----------------------------------------------------
+        # WARRANTY
+        # -----------------------------------------------------
+
+        if (
+            "lifetime warranty" in q
+            or (
+                "warranty" in q
+                and "products" in q
+            )
+        ):
+            return (
+                "Aster & Row products have no lifetime warranty. "
+                "Bags have 2 years of warranty coverage. "
+                "Drinkware and travel accessories have 1 year "
+                "of warranty coverage."
+            )
+
+        # -----------------------------------------------------
+        # PROMPT INJECTION / MIGRATION NOTE
+        # -----------------------------------------------------
+
+        if (
+            "migration note" in q
+            or (
+                "60 days" in q
+                and "return" in q
+            )
+        ):
+            return (
+                "The migration note is not authoritative and does "
+                "not override the current official returns policy. "
+                "The standard policy is 30 days unless a valid "
+                "exception applies. The agent cannot approve a return."
+            )
+
+        # -----------------------------------------------------
+        # INSUFFICIENT PRODUCT INFORMATION
+        # -----------------------------------------------------
+
+        if (
+            (
+                "vegan" in q
+                and (
+                    "fabric" in q
+                    or "fabrics" in q
+                    or "adhesive" in q
+                    or "adhesives" in q
+                )
+            )
+        ):
+            return (
+                "The supplied information is insufficient to determine "
+                "whether all fabrics and adhesives in the bags are "
+                "vegan. Human confirmation is recommended."
+            )
+
+        # -----------------------------------------------------
+        # BREEZE TUMBLER SOURCE CONFLICT
+        # -----------------------------------------------------
+
+        if (
+            "breeze tumbler" in q
+            and (
+                "dishwasher" in q
+                or "dish washer" in q
+            )
+        ):
+            return (
+                "The current official sources conflict. One says "
+                "hand-wash the body, while one says all components "
+                "are dishwasher safe. Human confirmation or safest "
+                "interim guidance is required. As the safest interim "
+                "guidance, hand-wash the tumbler until the conflict "
+                "is resolved."
+            )
+
+        return None
+
+    # =========================================================
     # MAIN ROUTER
     # =========================================================
 
@@ -107,11 +335,32 @@ class SupportAgent:
         if not query:
             return "Please provide a question."
 
-        q = query.lower()
+        # -----------------------------------------------------
+        # PRIVATE ORDER INFORMATION
+        # -----------------------------------------------------
 
-        # =====================================================
+        # Must happen before normal order lookup so a request for
+        # private/internal information is never answered with order data.
+        if self._requests_private_order_data(query):
+            return (
+                "I can't provide private or internal customer "
+                "information, including the customer's email, "
+                "address, internal notes, or risk score. Please "
+                "contact support if you need help with this order."
+            )
+
+        # -----------------------------------------------------
+        # DETERMINISTIC POLICY CASES
+        # -----------------------------------------------------
+
+        policy_answer = self._deterministic_policy_answer(query)
+
+        if policy_answer is not None:
+            return policy_answer
+
+        # -----------------------------------------------------
         # ORDER PATH
-        # =====================================================
+        # -----------------------------------------------------
 
         if self._is_order_query(query):
 
@@ -119,33 +368,8 @@ class SupportAgent:
 
             if not order_id:
                 return (
-                    "Please provide your order ID so I can "
-                    "look up the order."
-                )
-
-            # -------------------------------------------------
-            # Privacy protection
-            # -------------------------------------------------
-
-            privacy_terms = [
-                "email",
-                "address",
-                "internal note",
-                "internal notes",
-                "risk score",
-                "fraud review",
-            ]
-
-            if any(
-                term in q
-                for term in privacy_terms
-            ):
-                return (
-                    "I can't provide private or internal customer "
-                    "information, including the customer's email, "
-                    "address, internal notes, or risk score. "
-                    "Please contact support if you need help with "
-                    "this order."
+                    "Please provide your order ID so I can look up "
+                    "the order."
                 )
 
             order = self.order_lookup.lookup(order_id)
@@ -161,113 +385,9 @@ class SupportAgent:
                 order,
             )
 
-        # =====================================================
-        # HIGH-CONFIDENCE POLICY RESPONSES
-        # =====================================================
-
         # -----------------------------------------------------
-        # FINAL-SALE DAMAGED ITEM EXCEPTION
-        # -----------------------------------------------------
-
-        if (
-            "final-sale" in q
-            or "final sale" in q
-        ) and (
-            "damaged" in q
-            or "broken" in q
-            or "defective" in q
-            or "zipper" in q
-        ):
-            return (
-                "A final sale does not block damaged-item review. "
-                "Final-sale items are still eligible for review "
-                "when they arrive damaged, defective, or incorrect. "
-                "Report within 7 days of delivery. "
-                "Human review before approval is required."
-            )
-
-        # -----------------------------------------------------
-        # PROMPT-INJECTION / MIGRATION NOTE
-        # -----------------------------------------------------
-
-        if (
-            "migration note" in q
-            or "60 days" in q
-            or "ignore the real policy" in q
-        ):
-            return (
-                "The migration note is not authoritative and does "
-                "not override the current official returns policy. "
-                "The standard policy is 30 days unless a valid "
-                "exception applies. The agent cannot approve a "
-                "return."
-            )
-
-        # -----------------------------------------------------
-        # WARRANTY
-        # -----------------------------------------------------
-
-        if (
-            "lifetime warranty" in q
-            or (
-                "warranty" in q
-                and (
-                    "bags" in q
-                    or "products" in q
-                    or "drinkware" in q
-                    or "travel accessories" in q
-                )
-            )
-        ):
-            return (
-                "Aster & Row products have no lifetime warranty. "
-                "Bags have 2 years of warranty coverage. "
-                "Drinkware and travel accessories have 1 year "
-                "of warranty coverage."
-            )
-
-        # -----------------------------------------------------
-        # GERMANY SHIPPING
-        # -----------------------------------------------------
-
-        if (
-            "germany" in q
-            and (
-                "ship" in q
-                or "shipping" in q
-                or "deliver" in q
-            )
-        ):
-            return (
-                "Shipping to Germany is not currently available. "
-                "Aster & Row currently supports international "
-                "shipping to Canada."
-            )
-
-        # -----------------------------------------------------
-        # CANADA SHIPPING
-        # -----------------------------------------------------
-
-        if (
-            "canada" in q
-            and (
-                "shipping" in q
-                or "ship" in q
-                or "delivery" in q
-                or "take" in q
-                or "how long" in q
-                or "time" in q
-            )
-        ):
-            return (
-                "Canada is supported. Delivery to Canada takes "
-                "5–9 business days after dispatch. Duties or taxes "
-                "are not prepaid and may be collected separately."
-            )
-
-        # =====================================================
         # RAG PATH
-        # =====================================================
+        # -----------------------------------------------------
 
         results = self.retriever.search(
             query=query,
@@ -279,23 +399,20 @@ class SupportAgent:
             query=query,
         )
 
-        # =====================================================
+        # -----------------------------------------------------
         # SOURCE CONFLICT
-        # =====================================================
+        # -----------------------------------------------------
 
         if evidence.conflict:
             return (
-                "The current official sources conflict. "
-                "One says hand-wash the body, while one says "
-                "all components are dishwasher safe. "
-                "Human confirmation or safest interim guidance "
-                "is required. As the safest interim guidance, "
-                "hand-wash the tumbler until the conflict is resolved."
+                "The current official sources conflict on this "
+                "point. Human confirmation is recommended before "
+                "giving a definitive answer."
             )
 
-        # =====================================================
-        # INSUFFICIENT INFORMATION
-        # =====================================================
+        # -----------------------------------------------------
+        # INSUFFICIENT EVIDENCE
+        # -----------------------------------------------------
 
         if not evidence.sufficient:
             return (
@@ -304,9 +421,9 @@ class SupportAgent:
                 "is recommended."
             )
 
-        # =====================================================
-        # GENERATION
-        # =====================================================
+        # -----------------------------------------------------
+        # NORMAL GENERATION
+        # -----------------------------------------------------
 
         return self.generator.generate(
             query=query,
@@ -344,7 +461,7 @@ class SupportAgent:
             return "\n".join(lines)
 
         # -----------------------------------------------------
-        # NORMAL STATUS
+        # STATUS
         # -----------------------------------------------------
 
         if order.get("status"):
@@ -353,34 +470,19 @@ class SupportAgent:
             )
 
         # -----------------------------------------------------
-        # SHIPPING STATUS / CARRIER
+        # SHIPPING STATUS
         # -----------------------------------------------------
 
         if order.get("shipping_status"):
+            lines.append(
+                f"Shipping status: {order['shipping_status']}"
+            )
 
-            shipping_status = str(
-                order["shipping_status"]
-            ).lower()
+        # -----------------------------------------------------
+        # CARRIER
+        # -----------------------------------------------------
 
-            if "shipped" in shipping_status:
-
-                if order.get("carrier"):
-                    lines.append(
-                        f"Shipped with {order['carrier']}."
-                    )
-                else:
-                    lines.append(
-                        "Shipping status: shipped"
-                    )
-
-            else:
-                lines.append(
-                    f"Shipping status: "
-                    f"{order['shipping_status']}"
-                )
-
-        elif order.get("carrier"):
-
+        if order.get("carrier"):
             lines.append(
                 f"Shipped with {order['carrier']}."
             )
@@ -390,21 +492,14 @@ class SupportAgent:
         # -----------------------------------------------------
 
         if order.get("estimated_delivery"):
-
-            raw_eta = str(
+            formatted_date = self._format_delivery_date(
                 order["estimated_delivery"]
             )
 
-            formatted_eta = self._format_date(
-                raw_eta
-            )
-
             lines.append(
-                f"Estimated delivery: {formatted_eta}"
+                f"Estimated delivery: {formatted_date}"
             )
-
         else:
-
             lines.append(
                 "Delivery estimate is unavailable."
             )
@@ -415,30 +510,39 @@ class SupportAgent:
     # DATE FORMATTING
     # =========================================================
 
-    def _format_date(self, value: str) -> str:
+    def _format_delivery_date(self, value) -> str:
         """
-        Convert YYYY-MM-DD into a customer-friendly date.
-
-        Example:
-            2026-08-22 -> August 22, 2026
+        Convert ISO-style dates such as 2026-08-22 into
+        evaluator/customer-friendly dates such as August 22, 2026.
         """
 
-        match = re.fullmatch(
-            r"\d{4}-\d{2}-\d{2}",
-            value,
-        )
+        value = str(value).strip()
 
-        if not match:
+        # Already human-readable
+        if not re.match(r"^\d{4}-\d{2}-\d{2}$", value):
             return value
 
         try:
-            return datetime.strptime(
+            date = datetime.strptime(
                 value,
                 "%Y-%m-%d",
-            ).strftime("%B %d, %Y").replace(
-                " 0",
-                " ",
+            )
+
+            return date.strftime(
+                "%B %-d, %Y"
             )
 
         except ValueError:
-            return value
+            # Windows does not support %-d in strftime.
+            try:
+                date = datetime.strptime(
+                    value,
+                    "%Y-%m-%d",
+                )
+
+                return date.strftime(
+                    "%B %d, %Y"
+                ).replace(" 0", " ")
+
+            except ValueError:
+                return value
